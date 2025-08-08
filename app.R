@@ -12,15 +12,57 @@ library(ggplot2)
 library(shinyWidgets)
 library(readr)
 library(leafgl)
+library(curl)   # pour curl::curl_download
+
+# =======================
+# Sources de données: GitHub ou local
+# =======================
+USE_GITHUB   <- TRUE  # mets FALSE pour revenir en local
+
+# -> Renseigne tes infos GitHub :
+GH_USER      <- "hgesdrn"         # ex: "hgesdrn"  <<< À REMPLACER
+GH_REPO      <- "InterventionFor_Shiny"         # ex: "InterventionFor_Shiny"  <<< À REMPLACER
+GH_BRANCH    <- "main"             # ou "master"
+
+# Dossier de cache pour les fichiers rapatriés de GitHub
+cache_dir <- file.path(tempdir(), "if_cache")
+dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Construit l'URL RAW GitHub
+gh_raw_url <- function(path) {
+  sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
+          GH_USER, GH_REPO, GH_BRANCH, path)
+}
+
+# Télécharge une fois vers le cache et retourne le chemin local
+gh_get_file <- function(path_rel) {
+  url  <- gh_raw_url(path_rel)
+  dest <- file.path(cache_dir, gsub("[/\\\\]", "_", path_rel))
+  if (!file.exists(dest)) {
+    # si repo privé: prévoir un header Authorization: token GITHUB_PAT (on pourra l'ajouter)
+    try({
+      curl::curl_download(url, destfile = dest, quiet = TRUE)
+    }, silent = TRUE)
+    if (!file.exists(dest) || file.size(dest) == 0) {
+      stop(sprintf("Téléchargement GitHub échoué: %s", url))
+    }
+  }
+  dest
+}
 
 # --------- Terra/GDAL options (perf) ----------
 # terraOptions(memfrac = 0.6, todisk = TRUE, tempdir = tempdir())
 
-# 📁 Chemins
-chemin_csv     <- "data/table_barplot.csv"
-# chemin_rasters <- "data/rasters/"
-# tu utilises déjà une version simplifiée
-uasag_simpl    <- qs::qread("data/uasag_simpl.qs")
+# =======================
+# Chemins / données
+# =======================
+
+# CSV (URL GitHub directe possible avec readr)
+chemin_csv <- if (USE_GITHUB) gh_raw_url("data/table_barplot.csv") else "data/table_barplot.csv"
+
+# vecteur UA simplifié (.qs via cache si GitHub)
+uasag_path   <- if (USE_GITHUB) gh_get_file("data/uasag_simpl.qs") else "data/uasag_simpl.qs"
+uasag_simpl  <- qs::qread(uasag_path)
 
 # 🎨 Palette
 palette_classes <- c(
@@ -37,14 +79,14 @@ classes_nom <- c(
   "PL"    = "Plantation",
   "CT-CPR"= "Coupe protection régèn./totale"
 )
-classe_labels <- setNames(names(classes_nom), paste(names(classes_nom), "-", classes_nom))
+classe_labels <- setNames(names(classes_nom), paste(names(classes_nom), " - ", classes_nom))
 
 periodes   <- c("1960-1969","1970-1979","1980-1989","1990-1999","2000-2009","2010-2019","2020-2029")
 terr_choix <- c("02371", "02471", "02571", "02751")
 
-# 📊 Lecture de la table agrégée (CSV)
-df_agg <- read_csv(chemin_csv, show_col_types = FALSE) |>
-  filter(TERRITOIRE %in% terr_choix)
+# 📊 Lecture de la table agrégée (CSV) — UNE SEULE FOIS
+df_agg <- readr::read_csv(chemin_csv, show_col_types = FALSE) |>
+  dplyr::filter(TERRITOIRE %in% terr_choix)
 
 # BBox figé (WGS84)
 bb <- c(xmin = -74.43331,  ymin = 47.39345, xmax = -69.80989, ymax = 51.76088 )
@@ -60,24 +102,24 @@ centroides_ua <- sf::st_as_sf(centro_df, coords = c("lon","lat"), crs = 4326)
 ######
 # --- cache en mémoire pour les périodes déjà lues ---
 .cache_vec <- new.env(parent = emptyenv())
-path_vec   <- "data/vec"  # dossier où tu as mis les .qs
+path_vec_base <- "data/vec"  # racine dans le repo (ou local)
 
-# helper: charge une période (qs) en cache si absent
+# charge paresseusement un .qs par période (depuis GitHub si USE_GITHUB)
 load_period <- function(p) {
   key <- paste0("p_", p)
   if (!exists(key, envir = .cache_vec)) {
-    f <- file.path(path_vec, paste0("IntFor_", p, ".qs"))
+    rel <- file.path(path_vec_base, paste0("IntFor_", p, ".qs"))
+    f <- if (USE_GITHUB) gh_get_file(rel) else rel
     if (!file.exists(f)) {
-      showNotification(paste("Fichier manquant :", basename(f)), type = "error")
-      return(st_sf(Periode=character(), CLASS=character(),
-                   geometry=st_sfc(crs=4326)))
+      showNotification(paste("Fichier manquant :", basename(rel)), type = "error")
+      assign(key, sf::st_sf(Periode=character(), CLASS=character(),
+                            geometry=sf::st_sfc(crs=4326)), envir = .cache_vec)
+    } else {
+      assign(key, qs::qread(f), envir = .cache_vec)
     }
-    assign(key, qs::qread(f), envir = .cache_vec)
   }
   get(key, envir = .cache_vec)
 }
-
-
 
 # ===============================
 # UI
@@ -166,18 +208,16 @@ server <- function(input, output, session) {
       addProviderTiles("Esri.WorldImagery", group = "Imagerie") |>
       fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]) |>
       
-      # UA en CONTOURS UNIQUEMENT, et non-interactifs (pas de hover/click)
+      # UA en CONTOURS UNIQUEMENT, non-interactifs (pas de hover/click)
       addPolygons(
         data   = uasag_simpl,
-        fill   = FALSE,          # contours seulement
+        fill   = FALSE,
         color  = "grey35",
         weight = 1,
         opacity= 1,
         smoothFactor = 0.7,
         group  = "UA (polygones)",
-        # clé: on neutralise les interactions souris
         options = pathOptions(pointerEvents = "none")
-        # (ne pas mettre highlightOptions ici)
       ) |>
       
       # Étiquettes fixes (centroïdes)
@@ -200,9 +240,6 @@ server <- function(input, output, session) {
         options = layersControlOptions(collapsed = FALSE)
       )
   })
-  
-  
-  
   
   # --- helper centralisé pour rendre les polygones IntFor ---
   render_intfor <- function(period, classe) {
@@ -286,9 +323,6 @@ server <- function(input, output, session) {
     invisible(TRUE)
   }
   
-
-  
-  
   # 🔄 Mise à jour à chaque changement période/classe
   observeEvent(list(classe_db(), periode_db()), {
     render_intfor(periode_db(), classe_db())
@@ -325,6 +359,5 @@ server <- function(input, output, session) {
     render_intfor(isolate(periode_db()), isolate(classe_db()))
   }, once = TRUE)
 }
-
 
 shinyApp(ui, server)
