@@ -8,48 +8,51 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
+      SHINYAPPS_TOKEN:   ${{ secrets.SHINYAPPS_TOKEN }}
+      SHINYAPPS_SECRET:  ${{ secrets.SHINYAPPS_SECRET }}
+      SHINYAPPS_APPNAME: ${{ secrets.SHINYAPPS_APPNAME }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: r-lib/actions/setup-r@v2
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+
+      - name: Setup Pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      # Install dependencies from DESCRIPTION using pak
+      - name: Install R dependencies
+        uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          use-public-rspm: true
+          extra-packages: any::rsconnect
+          needs: project
 
-      - uses: r-lib/actions/setup-pandoc@v2
-
-      # 👇 System libraries needed for R packages compiled from source
-      - name: Install system dependencies
+      # Debug that secrets are actually present (lengths are safe to print)
+      - name: Debug env
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev \
-            libssl-dev \
-            libxml2-dev \
-            libgit2-dev \
-            pkg-config
+          echo "ACCOUNT length: ${#SHINYAPPS_ACCOUNT}"
+          echo "APPNAME: ${SHINYAPPS_APPNAME}"
 
-          # spatial stack likely needed by sf/terra
-          sudo apt-get install -y --no-install-recommends \
-            libgdal-dev \
-            libgeos-dev \
-            libproj-dev \
-            libudunits2-dev \
-            libsqlite3-dev
-
-      # renv restore (now that sysdeps exist)
-      - name: Restore renv
-        uses: r-lib/actions/setup-renv@v2
-
-      - name: Ensure rsconnect
-        run: Rscript -e 'install.packages("rsconnect", repos="https://cloud.r-project.org")'
+      - name: Fail fast if secrets missing
+        run: |
+          test -n "$SHINYAPPS_ACCOUNT" || { echo "SHINYAPPS_ACCOUNT is empty"; exit 1; }
+          test -n "$SHINYAPPS_TOKEN"   || { echo "SHINYAPPS_TOKEN is empty"; exit 1; }
+          test -n "$SHINYAPPS_SECRET"  || { echo "SHINYAPPS_SECRET is empty"; exit 1; }
+          test -n "$SHINYAPPS_APPNAME" || { echo "SHINYAPPS_APPNAME is empty"; exit 1; }
 
       - name: Deploy to shinyapps.io
-        env:
-          SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
-          SHINYAPPS_TOKEN:   ${{ secrets.SHINYAPPS_TOKEN }}
-          SHINYAPPS_SECRET:  ${{ secrets.SHINYAPPS_SECRET }}
-          SHINYAPPS_APPNAME: ${{ secrets.SHINYAPPS_APPNAME }}
         run: |
-          Rscript -e 'rsconnect::setAccountInfo(name=Sys.getenv("SHINYAPPS_ACCOUNT"), token=Sys.getenv("SHINYAPPS_TOKEN"), secret=Sys.getenv("SHINYAPPS_SECRET"))'
-          Rscript -e 'rsconnect::deployApp(appName = Sys.getenv("SHINYAPPS_APPNAME"), forceUpdate = TRUE, launch.browser = FALSE)'
+          Rscript -e 'rsconnect::setAccountInfo(
+                        name   = Sys.getenv("SHINYAPPS_ACCOUNT"),
+                        token  = Sys.getenv("SHINYAPPS_TOKEN"),
+                        secret = Sys.getenv("SHINYAPPS_SECRET")
+                      )'
+          Rscript -e 'rsconnect::deployApp(
+                        appName        = Sys.getenv("SHINYAPPS_APPNAME"),
+                        forceUpdate    = TRUE,
+                        launch.browser = FALSE
+                      )'
