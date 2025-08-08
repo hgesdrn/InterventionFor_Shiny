@@ -1,0 +1,43 @@
+name: Deploy to shinyapps.io
+
+on:
+  push:
+    branches: [ "main" ]   # déploie à chaque push sur main
+  workflow_dispatch:       # déclenchement manuel
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v2
+
+      - name: Setup Pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+
+      # Restaure/installe via renv (rapide et reproductible)
+      - name: Restore renv cache & install deps
+        uses: r-lib/actions/setup-renv@v2
+
+      # Installation minimale si besoin (au cas où renv ne capture pas tout)
+      - name: Ensure key packages
+        run: |
+          Rscript -e 'install.packages(c("rsconnect"), repos="https://cloud.r-project.org")'
+
+      - name: Deploy to shinyapps.io
+        env:
+          SHINYAPPS_ACCOUNT: ${{ secrets.SHINYAPPS_ACCOUNT }}
+          SHINYAPPS_TOKEN:   ${{ secrets.SHINYAPPS_TOKEN }}
+          SHINYAPPS_SECRET:  ${{ secrets.SHINYAPPS_SECRET }}
+          SHINYAPPS_APPNAME: ${{ secrets.SHINYAPPS_APPNAME }}
+        run: |
+          Rscript -e 'rsconnect::setAccountInfo(name=Sys.getenv("SHINYAPPS_ACCOUNT"),
+                                               token=Sys.getenv("SHINYAPPS_TOKEN"),
+                                               secret=Sys.getenv("SHINYAPPS_SECRET"))'
+          Rscript -e 'rsconnect::deployApp(appName = Sys.getenv("SHINYAPPS_APPNAME"),
+                                           forceUpdate = TRUE,
+                                           launch.browser = FALSE)'

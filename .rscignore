@@ -1,0 +1,18 @@
+# .rscignore
+data_ori/
+data/rasters/
+*.tif
+*.gpkg
+*.shp
+*.dbf
+*.shx
+*.prj
+*.sbn
+*.sbx
+*.xml
+*.lock
+*.qgz
+*.qgs
+tests/
+README*
+docs/
